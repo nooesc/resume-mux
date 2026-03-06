@@ -32,13 +32,10 @@ pub fn search<'a>(query: &str, sessions: &'a [Session]) -> Vec<SearchResult<'a>>
     let mut results: Vec<SearchResult<'a>> = sessions
         .iter()
         .filter_map(|session| {
-            let title_score = score_field(&query_lower, &tokens, &session.title.to_lowercase());
-            let dir_score = score_field(
-                &query_lower,
-                &tokens,
-                &session.directory.to_string_lossy().to_lowercase(),
-            );
-            let content_score = score_field(&query_lower, &tokens, &session.content.to_lowercase());
+            let title_score = score_field(&query_lower, &tokens, &session.title_lower);
+            let dir_score = score_field(&query_lower, &tokens, &session.dir_lower);
+            // Content uses lighter scoring — skip levenshtein (too many words)
+            let content_score = score_field_light(&query_lower, &tokens, &session.content_lower);
 
             let weighted = title_score * 3.0 + dir_score * 2.0 + content_score * 1.0;
 
@@ -97,6 +94,30 @@ fn score_field(query: &str, tokens: &[&str], field: &str) -> f64 {
             }
         }
     }
+
+    score
+}
+
+/// Score a field without levenshtein — used for content (too many words).
+fn score_field_light(query: &str, tokens: &[&str], field: &str) -> f64 {
+    let mut score = 0.0_f64;
+
+    if field.contains(query) {
+        score = score.max(100.0);
+    }
+
+    for token in tokens {
+        if field.contains(token) {
+            let mut token_score = 50.0;
+            if is_at_word_boundary(field, token) {
+                token_score += 20.0;
+            }
+            score = score.max(token_score);
+        }
+    }
+
+    let fuzzy = fuzzy_score(query, field);
+    score = score.max(fuzzy);
 
     score
 }
@@ -214,15 +235,15 @@ mod tests {
     use std::time::{Duration, SystemTime};
 
     fn make_session(title: &str, dir: &str, content: &str) -> Session {
-        Session {
-            id: title.to_string(),
-            agent: Agent::Claude,
-            title: title.to_string(),
-            directory: PathBuf::from(dir),
-            timestamp: SystemTime::now(),
-            content: content.to_string(),
-            message_count: 1,
-        }
+        Session::new(
+            title.to_string(),
+            Agent::Claude,
+            title.to_string(),
+            PathBuf::from(dir),
+            SystemTime::now(),
+            content.to_string(),
+            1,
+        )
     }
 
     #[test]

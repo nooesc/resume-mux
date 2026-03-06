@@ -215,15 +215,15 @@ fn parse_session_file(path: &Path) -> Option<Session> {
         return None;
     }
 
-    Some(Session {
-        id: session_id.unwrap_or_default(),
-        agent: Agent::Claude,
-        title: title.unwrap_or_else(|| "Untitled session".to_string()),
-        directory: directory.unwrap_or_default(),
+    Some(Session::new(
+        session_id.unwrap_or_default(),
+        Agent::Claude,
+        title.unwrap_or_else(|| "Untitled session".to_string()),
+        directory.unwrap_or_default(),
         timestamp,
-        content: content_parts.join("\n"),
+        content_parts.join("\n"),
         message_count,
-    })
+    ))
 }
 
 #[cfg(test)]

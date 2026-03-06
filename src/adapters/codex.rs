@@ -78,15 +78,21 @@ fn extract_response_text(content: &Value) -> Option<String> {
 }
 
 /// Parses a single Codex JSONL session file into a Session.
+///
+/// Codex format: event_msg entries don't have event_type in newer versions.
+/// We use turn_context as a turn boundary marker — the first event_msg with
+/// a message after each turn_context is the user's input. Subsequent ones
+/// are assistant reasoning (which we skip since response_item captures that).
 fn parse_session_file(path: &Path) -> Option<Session> {
     let file_content = fs::read_to_string(path).ok()?;
     let timestamp = fs::metadata(path).ok()?.modified().ok()?;
 
     let mut session_id: Option<String> = None;
     let mut directory: Option<PathBuf> = None;
-    let mut title: Option<String> = None;
+    let mut user_prompts: Vec<String> = Vec::new();
     let mut content_parts: Vec<String> = Vec::new();
     let mut message_count: usize = 0;
+    let mut awaiting_user_input = false;
 
     for line in file_content.lines() {
         let line = line.trim();
@@ -104,13 +110,12 @@ fn parse_session_file(path: &Path) -> Option<Session> {
             None => continue,
         };
 
-        let payload = match entry.get("payload") {
-            Some(p) => p,
-            None => continue,
-        };
-
         match entry_type {
             "session_meta" => {
+                let payload = match entry.get("payload") {
+                    Some(p) => p,
+                    None => continue,
+                };
                 if session_id.is_none() {
                     session_id = payload.get("id").and_then(|v| v.as_str()).map(String::from);
                 }
@@ -121,40 +126,43 @@ fn parse_session_file(path: &Path) -> Option<Session> {
                         .map(PathBuf::from);
                 }
             }
+            "turn_context" => {
+                // New turn — next event_msg with a message is the user's input
+                awaiting_user_input = true;
+            }
             "event_msg" => {
+                let payload = match entry.get("payload") {
+                    Some(p) => p,
+                    None => continue,
+                };
+
+                // Check for explicit event_type (older Codex format)
                 let event_type = payload.get("event_type").and_then(|v| v.as_str());
-                match event_type {
-                    Some("user_message") => {
-                        if let Some(msg) = payload.get("message").and_then(|v| v.as_str()) {
-                            let trimmed = msg.trim();
-                            if !trimmed.is_empty() {
-                                if title.is_none() {
-                                    let mut t = trimmed.to_string();
-                                    t.truncate(80);
-                                    title = Some(t);
-                                }
-                                content_parts.push(format!("You: {}", trimmed));
-                                message_count += 1;
-                            }
+
+                if event_type == Some("user_message") || awaiting_user_input {
+                    if let Some(msg) = payload.get("message").and_then(|v| v.as_str()) {
+                        let trimmed = msg.trim();
+                        if !trimmed.is_empty() {
+                            user_prompts.push(trimmed.to_string());
+                            content_parts.push(format!("You: {}", trimmed));
+                            message_count += 1;
+                            awaiting_user_input = false;
                         }
                     }
-                    _ => {}
                 }
+                // Skip assistant reasoning event_msgs — response_item captures those
             }
             "response_item" => {
+                let payload = match entry.get("payload") {
+                    Some(p) => p,
+                    None => continue,
+                };
                 let role = payload.get("role").and_then(|v| v.as_str());
-                if let Some(content) = payload.get("content") {
-                    if let Some(text) = extract_response_text(content) {
-                        match role {
-                            Some("user") => {
-                                content_parts.push(format!("You: {}", text));
-                                message_count += 1;
-                            }
-                            Some("assistant") => {
-                                content_parts.push(format!("Assistant: {}", text));
-                                message_count += 1;
-                            }
-                            _ => {}
+                if role == Some("assistant") {
+                    if let Some(content) = payload.get("content") {
+                        if let Some(text) = extract_response_text(content) {
+                            content_parts.push(format!("Assistant: {}", text));
+                            message_count += 1;
                         }
                     }
                 }
@@ -163,20 +171,34 @@ fn parse_session_file(path: &Path) -> Option<Session> {
         }
     }
 
-    // Skip sessions with no user prompts
-    if title.is_none() || message_count == 0 {
+    if user_prompts.is_empty() {
         return None;
     }
 
-    Some(Session {
-        id: session_id.unwrap_or_default(),
-        agent: Agent::Codex,
-        title: title.unwrap_or_else(|| "Untitled session".to_string()),
-        directory: directory.unwrap_or_default(),
+    let mut title = user_prompts[0].clone();
+    title.truncate(80);
+
+    // Extract session id from filename if not found in metadata
+    if session_id.is_none() {
+        if let Some(name) = path.file_stem().and_then(|n| n.to_str()) {
+            // rollout-2026-01-28T17-14-41-019c06ac-4e6f-7832-9f98-eb972834cfe1
+            // Try to extract UUID from the end
+            let parts: Vec<&str> = name.splitn(2, '-').collect();
+            if parts.len() == 2 {
+                session_id = Some(parts[1].to_string());
+            }
+        }
+    }
+
+    Some(Session::new(
+        session_id.unwrap_or_default(),
+        Agent::Codex,
+        title,
+        directory.unwrap_or_default(),
         timestamp,
-        content: content_parts.join("\n"),
+        content_parts.join("\n"),
         message_count,
-    })
+    ))
 }
 
 #[cfg(test)]
@@ -231,8 +253,9 @@ mod tests {
         );
         assert_eq!(session.directory, PathBuf::from("/home/dev/myproject"));
 
-        // 1 event_msg user_message + 1 assistant response_item + 1 user response_item + 1 assistant response_item = 4
-        assert_eq!(session.message_count, 4);
+        // 1 user event_msg + 2 assistant response_items = 3
+        // (response_item role="user" is skipped — those are system context)
+        assert_eq!(session.message_count, 3);
 
         // Verify content ordering and formatting
         assert!(session
@@ -241,7 +264,8 @@ mod tests {
         assert!(session
             .content
             .contains("Assistant: I'll refactor the database layer to use connection pooling."));
-        assert!(session.content.contains("You: Now add error handling too"));
+        // response_item role="user" is no longer captured (system context)
+        // Only event_msg user messages are captured
         assert!(session
             .content
             .contains("Assistant: Done! I've added comprehensive error handling"));

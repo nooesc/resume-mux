@@ -34,6 +34,39 @@ pub struct Session {
     pub timestamp: SystemTime,
     pub content: String,
     pub message_count: usize,
+    // Pre-computed lowercase for search performance
+    pub title_lower: String,
+    pub dir_lower: String,
+    pub content_lower: String,
+}
+
+impl Session {
+    pub fn new(
+        id: String,
+        agent: Agent,
+        title: String,
+        directory: PathBuf,
+        timestamp: SystemTime,
+        content: String,
+        message_count: usize,
+    ) -> Self {
+        let title_lower = title.to_lowercase();
+        let dir_lower = directory.to_string_lossy().to_lowercase();
+        // Only index first 2000 chars of content for search — keeps search fast
+        let content_lower = content.chars().take(2000).collect::<String>().to_lowercase();
+        Self {
+            id,
+            agent,
+            title,
+            directory,
+            timestamp,
+            content,
+            message_count,
+            title_lower,
+            dir_lower,
+            content_lower,
+        }
+    }
 }
 
 pub fn load_all_sessions() -> Vec<Session> {
