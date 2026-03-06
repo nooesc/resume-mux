@@ -50,7 +50,7 @@ fn render_session_list(frame: &mut Frame, app: &App, area: Rect) {
                 Agent::Codex => Style::default().fg(Color::Rgb(100, 200, 100)),
             };
 
-            let _time_ago = format_time_ago(r.session.timestamp);
+            let time_ago = format_time_ago(r.session.timestamp);
             let dir_short = shorten_path(&r.session.directory);
 
             let line = Line::from(vec![
@@ -68,7 +68,7 @@ fn render_session_list(frame: &mut Frame, app: &App, area: Rect) {
             let meta = Line::from(vec![
                 Span::raw("       "),
                 Span::styled(
-                    format!("{}  {}", dir_short, _time_ago),
+                    format!("{}  {}  {}msg", dir_short, time_ago, r.session.message_count),
                     Style::default().fg(Color::DarkGray),
                 ),
             ]);
