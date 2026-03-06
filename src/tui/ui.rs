@@ -76,14 +76,7 @@ fn render_session_list(frame: &mut Frame, app: &mut App, area: Rect) {
                 Span::styled(right, Style::default().fg(Color::DarkGray)),
             ]);
 
-            // Line 2: brief title (first ~8 words), indented
-            let brief = first_n_words(&session.title, 8);
-            let desc = Line::from(vec![
-                Span::raw("       "),
-                Span::styled(brief, Style::default().fg(Color::White)),
-            ]);
-
-            ListItem::new(vec![header, desc])
+            ListItem::new(vec![header])
         })
         .collect();
 
@@ -262,15 +255,6 @@ fn shorten_path(path: &std::path::Path, home_str: &str, max_len: usize) -> Strin
     } else {
         let tail: String = short.chars().skip(char_count - (max_len - 3)).collect();
         format!("...{}", tail)
-    }
-}
-
-fn first_n_words(s: &str, n: usize) -> String {
-    let words: Vec<&str> = s.split_whitespace().take(n + 1).collect();
-    if words.len() > n {
-        format!("{}...", words[..n].join(" "))
-    } else {
-        words.join(" ")
     }
 }
 
