@@ -1,6 +1,6 @@
 ![screenshot](screenshot.png)
 
-# ar — resume-mux
+# resume-mux
 
 A TUI for searching and resuming Claude Code and Codex coding agent sessions.
 
