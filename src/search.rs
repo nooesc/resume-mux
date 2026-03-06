@@ -1,25 +1,52 @@
 use crate::adapters::Session;
 use std::time::SystemTime;
 
+#[derive(Debug, Clone, Copy)]
+struct SearchMatch {
+    index: usize,
+    score: f64,
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Debug)]
 pub struct SearchResult<'a> {
     pub session: &'a Session,
     pub score: f64,
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn search<'a>(query: &str, sessions: &'a [Session]) -> Vec<SearchResult<'a>> {
+    search_matches(query, sessions)
+        .into_iter()
+        .filter_map(|result| {
+            sessions.get(result.index).map(|session| SearchResult {
+                session,
+                score: result.score,
+            })
+        })
+        .collect()
+}
+
+pub fn search_indices(query: &str, sessions: &[Session]) -> Vec<usize> {
+    search_matches(query, sessions)
+        .into_iter()
+        .map(|result| result.index)
+        .collect()
+}
+
+fn search_matches(query: &str, sessions: &[Session]) -> Vec<SearchMatch> {
     let query_trimmed = query.trim();
 
     if query_trimmed.is_empty() {
-        // Empty query returns all sessions sorted by recency
-        let mut results: Vec<SearchResult<'a>> = sessions
+        let mut results: Vec<SearchMatch> = sessions
             .iter()
-            .map(|session| SearchResult { session, score: 1.0 })
+            .enumerate()
+            .map(|(index, _)| SearchMatch { index, score: 1.0 })
             .collect();
         results.sort_by(|a, b| {
-            b.session
+            sessions[b.index]
                 .timestamp
-                .cmp(&a.session.timestamp)
+                .cmp(&sessions[a.index].timestamp)
         });
         return results;
     }
@@ -29,13 +56,14 @@ pub fn search<'a>(query: &str, sessions: &'a [Session]) -> Vec<SearchResult<'a>>
 
     let now = SystemTime::now();
 
-    let mut results: Vec<SearchResult<'a>> = sessions
+    let mut results: Vec<SearchMatch> = sessions
         .iter()
+        .enumerate()
         .filter_map(|session| {
-            let title_score = score_field(&query_lower, &tokens, &session.title_lower);
-            let dir_score = score_field(&query_lower, &tokens, &session.dir_lower);
-            // Content uses lighter scoring — skip levenshtein (too many words)
-            let content_score = score_field_light(&query_lower, &tokens, &session.content_lower);
+            let (index, session) = session;
+            let title_score = score_field(&query_lower, &tokens, &session.title_lower, true);
+            let dir_score = score_field(&query_lower, &tokens, &session.dir_lower, true);
+            let content_score = score_field(&query_lower, &tokens, &session.content_lower, false);
 
             let weighted = title_score * 3.0 + dir_score * 2.0 + content_score * 1.0;
 
@@ -47,7 +75,7 @@ pub fn search<'a>(query: &str, sessions: &'a [Session]) -> Vec<SearchResult<'a>>
             let recency_bonus = recency_decay(now, session.timestamp);
             let score = weighted + recency_bonus;
 
-            Some(SearchResult { session, score })
+            Some(SearchMatch { index, score })
         })
         .collect();
 
@@ -61,7 +89,8 @@ pub fn search<'a>(query: &str, sessions: &'a [Session]) -> Vec<SearchResult<'a>>
 }
 
 /// Score a single field against the query and its tokens.
-fn score_field(query: &str, tokens: &[&str], field: &str) -> f64 {
+/// When `use_levenshtein` is false, skips typo tolerance (expensive for large fields like content).
+fn score_field(query: &str, tokens: &[&str], field: &str, use_levenshtein: bool) -> f64 {
     let mut score = 0.0_f64;
 
     // 1. Exact full query substring match
@@ -73,7 +102,6 @@ fn score_field(query: &str, tokens: &[&str], field: &str) -> f64 {
     for token in tokens {
         if field.contains(token) {
             let mut token_score = 50.0;
-            // Word boundary bonus: token appears at start of a word in the field
             if is_at_word_boundary(field, token) {
                 token_score += 20.0;
             }
@@ -86,38 +114,16 @@ fn score_field(query: &str, tokens: &[&str], field: &str) -> f64 {
     score = score.max(fuzzy);
 
     // 4. Levenshtein typo tolerance per word in the field
-    let field_words: Vec<&str> = field.split_whitespace().collect();
-    for token in tokens {
-        for word in &field_words {
-            if levenshtein(token, word) <= 1 && token != word {
-                score = score.max(10.0);
+    if use_levenshtein {
+        let field_words: Vec<&str> = field.split_whitespace().collect();
+        for token in tokens {
+            for word in &field_words {
+                if levenshtein(token, word) <= 1 && token != word {
+                    score = score.max(10.0);
+                }
             }
         }
     }
-
-    score
-}
-
-/// Score a field without levenshtein — used for content (too many words).
-fn score_field_light(query: &str, tokens: &[&str], field: &str) -> f64 {
-    let mut score = 0.0_f64;
-
-    if field.contains(query) {
-        score = score.max(100.0);
-    }
-
-    for token in tokens {
-        if field.contains(token) {
-            let mut token_score = 50.0;
-            if is_at_word_boundary(field, token) {
-                token_score += 20.0;
-            }
-            score = score.max(token_score);
-        }
-    }
-
-    let fuzzy = fuzzy_score(query, field);
-    score = score.max(fuzzy);
 
     score
 }
@@ -218,10 +224,7 @@ fn levenshtein(a: &str, b: &str) -> usize {
 
 /// Recency decay: newer sessions get a small bonus (0.0 to 0.5).
 fn recency_decay(now: SystemTime, timestamp: SystemTime) -> f64 {
-    let elapsed = now
-        .duration_since(timestamp)
-        .unwrap_or_default()
-        .as_secs() as f64;
+    let elapsed = now.duration_since(timestamp).unwrap_or_default().as_secs() as f64;
     // Decay over ~30 days (2_592_000 seconds)
     let decay = (-elapsed / 2_592_000.0).exp();
     0.5 * decay
@@ -241,6 +244,7 @@ mod tests {
             title.to_string(),
             PathBuf::from(dir),
             SystemTime::now(),
+            PathBuf::from("/tmp/session.jsonl"),
             content.to_string(),
             1,
         )
@@ -249,8 +253,16 @@ mod tests {
     #[test]
     fn test_exact_substring_ranks_highest() {
         let sessions = vec![
-            make_session("fix authentication bug", "/home/user/project", "unrelated content"),
-            make_session("unrelated title", "/home/user/project", "fix authentication bug in content"),
+            make_session(
+                "fix authentication bug",
+                "/home/user/project",
+                "unrelated content",
+            ),
+            make_session(
+                "unrelated title",
+                "/home/user/project",
+                "fix authentication bug in content",
+            ),
         ];
 
         let results = search("fix authentication", &sessions);

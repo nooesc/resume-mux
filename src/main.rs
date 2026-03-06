@@ -14,10 +14,6 @@ pub struct Cli {
     /// Filter by agent (claude, codex)
     #[arg(short, long)]
     pub agent: Option<String>,
-
-    /// Default to yolo mode when resuming
-    #[arg(long)]
-    pub yolo: bool,
 }
 
 fn main() {
@@ -35,11 +31,21 @@ fn main() {
         std::process::exit(0);
     }
 
-    match tui::run(sessions, cli.query, cli.yolo) {
-        Ok(Some((id, agent, dir, yolo))) => {
-            let err = resume::exec_resume(agent, &id, &dir, yolo);
-            eprintln!("Failed to exec: {}", err);
-            std::process::exit(1);
+    match tui::run(sessions, cli.query) {
+        Ok(Some(action)) => {
+            if action.tmux {
+                if let Err(e) =
+                    resume::tmux_resume(action.agent, &action.session_id, &action.directory)
+                {
+                    eprintln!("Failed to open tmux window: {}", e);
+                    std::process::exit(1);
+                }
+            } else {
+                let err =
+                    resume::exec_resume(action.agent, &action.session_id, &action.directory);
+                eprintln!("Failed to exec: {}", err);
+                std::process::exit(1);
+            }
         }
         Ok(None) => {}
         Err(e) => {

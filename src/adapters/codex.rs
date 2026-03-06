@@ -1,9 +1,13 @@
-use std::fs;
+use std::collections::HashMap;
+use std::fs::{self, File};
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
-use super::{Agent, Session};
+use super::{
+    append_search_text, metadata_signature, scan_with_cache, Agent, Session, SEARCH_TEXT_LIMIT,
+};
 
 /// Scans the default ~/.codex/sessions directory for Codex sessions.
 pub fn scan_sessions() -> Vec<Session> {
@@ -11,19 +15,37 @@ pub fn scan_sessions() -> Vec<Session> {
         Some(home) => home.join(".codex").join("sessions"),
         None => return Vec::new(),
     };
-    scan_sessions_in(&base)
+    scan_session_summaries_in(&base)
 }
 
 /// Scans a given base directory for Codex JSONL session files.
 /// Sessions are nested as YYYY/MM/DD/*.jsonl under `base`.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn scan_sessions_in(base: &Path) -> Vec<Session> {
     let mut sessions = Vec::new();
-    collect_sessions_recursive(base, &mut sessions);
+    collect_sessions_recursive(base, &mut sessions, parse_session_file);
     sessions
 }
 
+pub fn load_session_content(path: &Path) -> Option<String> {
+    parse_session_file(path).map(|session| session.content)
+}
+
+fn scan_session_summaries_in(base: &Path) -> Vec<Session> {
+    scan_with_cache(
+        "codex-summaries.json",
+        dedup_forked_paths(collect_session_paths(base)),
+        parse_session_summary_file,
+    )
+}
+
 /// Recursively traverse directories to find .jsonl files.
-fn collect_sessions_recursive(dir: &Path, sessions: &mut Vec<Session>) {
+#[cfg_attr(not(test), allow(dead_code))]
+fn collect_sessions_recursive(
+    dir: &Path,
+    sessions: &mut Vec<Session>,
+    parse: fn(&Path) -> Option<Session>,
+) {
     let entries = match fs::read_dir(dir) {
         Ok(entries) => entries,
         Err(_) => return,
@@ -32,11 +54,108 @@ fn collect_sessions_recursive(dir: &Path, sessions: &mut Vec<Session>) {
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
-            collect_sessions_recursive(&path, sessions);
+            collect_sessions_recursive(&path, sessions, parse);
         } else if path.extension().and_then(|e| e.to_str()) == Some("jsonl") {
-            if let Some(session) = parse_session_file(&path) {
+            if let Some(session) = parse(&path) {
                 sessions.push(session);
             }
+        }
+    }
+}
+
+/// Read the first few lines of a JSONL file to find `forked_from_id`.
+/// Returns `Some(parent_id)` if this is a forked session, `None` if original.
+fn read_forked_from_id(path: &Path) -> Option<String> {
+    let file = File::open(path).ok()?;
+    let reader = BufReader::new(file);
+    for line in reader.lines().take(3) {
+        let line = line.ok()?;
+        let entry: Value = match serde_json::from_str(line.trim()) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        if entry.get("type").and_then(|t| t.as_str()) == Some("session_meta") {
+            if let Some(payload) = entry.get("payload") {
+                if let Some(forked_id) = payload.get("forked_from_id").and_then(|v| v.as_str()) {
+                    return Some(forked_id.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Deduplicate forked session files. For each group of files sharing the same
+/// `forked_from_id`, keep only the most recently modified one. Also removes
+/// the original parent file if a newer fork exists.
+fn dedup_forked_paths(file_paths: Vec<PathBuf>) -> Vec<PathBuf> {
+    // Map: root_session_id -> (best_path, best_mtime)
+    let mut groups: HashMap<String, (PathBuf, u64)> = HashMap::new();
+    let mut standalone: Vec<PathBuf> = Vec::new();
+
+    for path in &file_paths {
+        if let Some(forked_from) = read_forked_from_id(path) {
+            let mtime = metadata_signature(path).map(|(_, m)| m).unwrap_or(0);
+            let entry = groups.entry(forked_from).or_insert_with(|| (path.clone(), mtime));
+            if mtime > entry.1 {
+                *entry = (path.clone(), mtime);
+            }
+        } else {
+            standalone.push(path.clone());
+        }
+    }
+
+    // Filter out original parent files that have been superseded by forks
+    let forked_roots: std::collections::HashSet<&str> =
+        groups.keys().map(|s| s.as_str()).collect();
+
+    let mut result: Vec<PathBuf> = standalone
+        .into_iter()
+        .filter(|path| {
+            // Check if this standalone session's id matches a forked_from_id
+            // If so, the fork supersedes it — skip the original
+            let id = extract_session_id_from_path(path);
+            match id {
+                Some(ref id) if forked_roots.contains(id.as_str()) => false,
+                _ => true,
+            }
+        })
+        .collect();
+
+    result.extend(groups.into_values().map(|(path, _)| path));
+    result
+}
+
+/// Extract session ID from filename (UUID portion at end).
+fn extract_session_id_from_path(path: &Path) -> Option<String> {
+    let name = path.file_stem()?.to_str()?;
+    let segments: Vec<&str> = name.split('-').collect();
+    if segments.len() >= 5 {
+        let uuid_parts = &segments[segments.len() - 5..];
+        Some(uuid_parts.join("-"))
+    } else {
+        None
+    }
+}
+
+fn collect_session_paths(base: &Path) -> Vec<PathBuf> {
+    let mut file_paths = Vec::new();
+    collect_session_paths_recursive(base, &mut file_paths);
+    file_paths
+}
+
+fn collect_session_paths_recursive(dir: &Path, file_paths: &mut Vec<PathBuf>) {
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(_) => return,
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_session_paths_recursive(&path, file_paths);
+        } else if path.extension().and_then(|e| e.to_str()) == Some("jsonl") {
+            file_paths.push(path);
         }
     }
 }
@@ -175,20 +294,10 @@ fn parse_session_file(path: &Path) -> Option<Session> {
         return None;
     }
 
-    let mut title = user_prompts[0].clone();
-    title.truncate(80);
+    let title: String = user_prompts[0].chars().take(100).collect();
 
-    // Extract session id from filename if not found in metadata
-    // Filename: rollout-2026-01-28T17-14-41-019c06ac-4e6f-7832-9f98-eb972834cfe1
-    // The UUID is the last 5 hyphen-separated segments (8-4-4-4-12 pattern)
     if session_id.is_none() {
-        if let Some(name) = path.file_stem().and_then(|n| n.to_str()) {
-            let segments: Vec<&str> = name.split('-').collect();
-            if segments.len() >= 5 {
-                let uuid_parts = &segments[segments.len() - 5..];
-                session_id = Some(uuid_parts.join("-"));
-            }
-        }
+        session_id = extract_session_id_from_path(path);
     }
 
     Some(Session::new(
@@ -197,7 +306,127 @@ fn parse_session_file(path: &Path) -> Option<Session> {
         title,
         directory.unwrap_or_default(),
         timestamp,
+        path.to_path_buf(),
         content_parts.join("\n"),
+        message_count,
+    ))
+}
+
+fn parse_session_summary_file(path: &Path) -> Option<Session> {
+    let file = File::open(path).ok()?;
+    let timestamp = fs::metadata(path).ok()?.modified().ok()?;
+    let reader = BufReader::new(file);
+
+    let mut session_id: Option<String> = None;
+    let mut directory: Option<PathBuf> = None;
+    let mut title: Option<String> = None;
+    let mut message_count = 0usize;
+    let mut awaiting_user_input = false;
+    let mut search_text = String::new();
+    let mut remaining_search_chars = SEARCH_TEXT_LIMIT;
+
+    for line in reader.lines() {
+        let line = line.ok()?;
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+
+        let entry: Value = match serde_json::from_str(line) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+
+        let entry_type = match entry.get("type").and_then(|t| t.as_str()) {
+            Some(t) => t,
+            None => continue,
+        };
+
+        match entry_type {
+            "session_meta" => {
+                let payload = match entry.get("payload") {
+                    Some(p) => p,
+                    None => continue,
+                };
+                if session_id.is_none() {
+                    session_id = payload.get("id").and_then(|v| v.as_str()).map(String::from);
+                }
+                if directory.is_none() {
+                    directory = payload
+                        .get("cwd")
+                        .and_then(|v| v.as_str())
+                        .map(PathBuf::from);
+                }
+            }
+            "turn_context" => {
+                awaiting_user_input = true;
+            }
+            "event_msg" => {
+                let payload = match entry.get("payload") {
+                    Some(p) => p,
+                    None => continue,
+                };
+                let event_type = payload.get("event_type").and_then(|v| v.as_str());
+
+                if event_type == Some("user_message") || awaiting_user_input {
+                    if let Some(msg) = payload.get("message").and_then(|v| v.as_str()) {
+                        let trimmed = msg.trim();
+                        if !trimmed.is_empty() {
+                            if title.is_none() {
+                                title = Some(trimmed.chars().take(100).collect());
+                            }
+                            append_search_text(
+                                &mut search_text,
+                                &mut remaining_search_chars,
+                                "You: ",
+                                trimmed,
+                            );
+                            message_count += 1;
+                            awaiting_user_input = false;
+                        }
+                    }
+                }
+            }
+            "response_item" => {
+                let payload = match entry.get("payload") {
+                    Some(p) => p,
+                    None => continue,
+                };
+                let role = payload.get("role").and_then(|v| v.as_str());
+                if role == Some("assistant") {
+                    if let Some(content) = payload.get("content") {
+                        if let Some(text) = extract_response_text(content) {
+                            append_search_text(
+                                &mut search_text,
+                                &mut remaining_search_chars,
+                                "Assistant: ",
+                                text.trim(),
+                            );
+                            message_count += 1;
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if title.is_none() {
+        return None;
+    }
+
+    if session_id.is_none() {
+        session_id = extract_session_id_from_path(path);
+    }
+
+    Some(Session::from_summary(
+        session_id.unwrap_or_default(),
+        Agent::Codex,
+        title.unwrap_or_default(),
+        directory.unwrap_or_default(),
+        timestamp,
+        path.to_path_buf(),
+        search_text,
         message_count,
     ))
 }

@@ -1,9 +1,10 @@
-use std::fs;
+use std::fs::{self, File};
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
-use super::{Agent, Session};
+use super::{append_search_text, scan_with_cache, Agent, Session, SEARCH_TEXT_LIMIT};
 
 /// Scans the default ~/.claude/projects directory for Claude Code sessions.
 pub fn scan_sessions() -> Vec<Session> {
@@ -11,17 +12,44 @@ pub fn scan_sessions() -> Vec<Session> {
         Some(home) => home.join(".claude").join("projects"),
         None => return Vec::new(),
     };
-    scan_sessions_in(&base)
+    scan_session_summaries_in(&base)
 }
 
 /// Scans a given base directory for Claude Code JSONL session files.
 /// Each subdirectory under `base` represents a project, containing `*.jsonl` files.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn scan_sessions_in(base: &Path) -> Vec<Session> {
-    let mut sessions = Vec::new();
+    collect_sessions(base, parse_session_file)
+}
 
+pub fn load_session_content(path: &Path) -> Option<String> {
+    parse_session_file(path).map(|session| session.content)
+}
+
+fn scan_session_summaries_in(base: &Path) -> Vec<Session> {
+    scan_with_cache(
+        "claude-summaries.json",
+        collect_session_paths(base),
+        parse_session_summary_file,
+    )
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+fn collect_sessions(base: &Path, parse: fn(&Path) -> Option<Session>) -> Vec<Session> {
+    let mut sessions = Vec::new();
+    for file_path in collect_session_paths(base) {
+        if let Some(session) = parse(&file_path) {
+            sessions.push(session);
+        }
+    }
+    sessions
+}
+
+fn collect_session_paths(base: &Path) -> Vec<PathBuf> {
+    let mut file_paths = Vec::new();
     let project_dirs = match fs::read_dir(base) {
         Ok(entries) => entries,
-        Err(_) => return sessions,
+        Err(_) => return file_paths,
     };
 
     for project_entry in project_dirs.flatten() {
@@ -49,13 +77,11 @@ pub fn scan_sessions_in(base: &Path) -> Vec<Session> {
                 }
             }
 
-            if let Some(session) = parse_session_file(&file_path) {
-                sessions.push(session);
-            }
+            file_paths.push(file_path);
         }
     }
 
-    sessions
+    file_paths
 }
 
 /// Extracts text content from user message content (string or array of content blocks).
@@ -161,7 +187,11 @@ fn parse_session_file(path: &Path) -> Option<Session> {
         }
 
         // Skip isMeta messages
-        if entry.get("isMeta").and_then(|v| v.as_bool()).unwrap_or(false) {
+        if entry
+            .get("isMeta")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+        {
             continue;
         }
 
@@ -174,12 +204,11 @@ fn parse_session_file(path: &Path) -> Option<Session> {
             "user" => {
                 // Extract session metadata from first user message
                 if session_id.is_none() {
-                    session_id =
-                        entry.get("sessionId").and_then(|s| s.as_str()).map(String::from);
-                    directory = entry
-                        .get("cwd")
+                    session_id = entry
+                        .get("sessionId")
                         .and_then(|s| s.as_str())
-                        .map(PathBuf::from);
+                        .map(String::from);
+                    directory = entry.get("cwd").and_then(|s| s.as_str()).map(PathBuf::from);
                 }
 
                 if let Some(text) = extract_user_text(message) {
@@ -187,8 +216,7 @@ fn parse_session_file(path: &Path) -> Option<Session> {
                     if !text.is_empty() {
                         // Set title from first substantial user message (>10 chars)
                         if title.is_none() && text.len() > 10 {
-                            let mut t = text.clone();
-                            t.truncate(100);
+                            let t: String = text.chars().take(100).collect();
                             title = Some(t);
                         }
 
@@ -221,7 +249,114 @@ fn parse_session_file(path: &Path) -> Option<Session> {
         title.unwrap_or_else(|| "Untitled session".to_string()),
         directory.unwrap_or_default(),
         timestamp,
+        path.to_path_buf(),
         content_parts.join("\n"),
+        message_count,
+    ))
+}
+
+fn parse_session_summary_file(path: &Path) -> Option<Session> {
+    let file = File::open(path).ok()?;
+    let timestamp = fs::metadata(path).ok()?.modified().ok()?;
+    let reader = BufReader::new(file);
+
+    let mut session_id: Option<String> = None;
+    let mut directory: Option<PathBuf> = None;
+    let mut title: Option<String> = None;
+    let mut message_count = 0usize;
+    let mut search_text = String::new();
+    let mut remaining_search_chars = SEARCH_TEXT_LIMIT;
+
+    for line in reader.lines() {
+        let line = line.ok()?;
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+
+        let entry: Value = match serde_json::from_str(line) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+
+        let entry_type = match entry.get("type").and_then(|t| t.as_str()) {
+            Some(t) => t,
+            None => continue,
+        };
+
+        if entry_type != "user" && entry_type != "assistant" {
+            continue;
+        }
+
+        if entry
+            .get("isMeta")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+        {
+            continue;
+        }
+
+        let message = match entry.get("message") {
+            Some(m) => m,
+            None => continue,
+        };
+
+        match entry_type {
+            "user" => {
+                if session_id.is_none() {
+                    session_id = entry
+                        .get("sessionId")
+                        .and_then(|s| s.as_str())
+                        .map(String::from);
+                    directory = entry.get("cwd").and_then(|s| s.as_str()).map(PathBuf::from);
+                }
+
+                if let Some(text) = extract_user_text(message) {
+                    let text = text.trim();
+                    if !text.is_empty() {
+                        if title.is_none() && text.len() > 10 {
+                            title = Some(text.chars().take(100).collect());
+                        }
+                        append_search_text(
+                            &mut search_text,
+                            &mut remaining_search_chars,
+                            "You: ",
+                            text,
+                        );
+                        message_count += 1;
+                    }
+                }
+            }
+            "assistant" => {
+                if let Some(text) = extract_assistant_text(message) {
+                    let text = text.trim();
+                    if !text.is_empty() {
+                        append_search_text(
+                            &mut search_text,
+                            &mut remaining_search_chars,
+                            "Assistant: ",
+                            text,
+                        );
+                        message_count += 1;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if message_count == 0 {
+        return None;
+    }
+
+    Some(Session::from_summary(
+        session_id.unwrap_or_default(),
+        Agent::Claude,
+        title.unwrap_or_else(|| "Untitled session".to_string()),
+        directory.unwrap_or_default(),
+        timestamp,
+        path.to_path_buf(),
+        search_text,
         message_count,
     ))
 }
@@ -277,17 +412,20 @@ mod tests {
         let session = &sessions[0];
         assert_eq!(session.id, session_id);
         assert_eq!(session.agent, Agent::Claude);
-        assert_eq!(
-            session.title,
-            "Hello, can you help me refactor this code?"
-        );
+        assert_eq!(session.title, "Hello, can you help me refactor this code?");
         assert_eq!(session.directory, PathBuf::from("/home/user/project"));
         // 2 user messages + 1 assistant text response = 3
         assert_eq!(session.message_count, 3);
 
-        assert!(session.content.contains("You: Hello, can you help me refactor this code?"));
-        assert!(session.content.contains("Assistant: Sure! I'd be happy to help you refactor."));
-        assert!(session.content.contains("You: The main.rs file needs cleanup"));
+        assert!(session
+            .content
+            .contains("You: Hello, can you help me refactor this code?"));
+        assert!(session
+            .content
+            .contains("Assistant: Sure! I'd be happy to help you refactor."));
+        assert!(session
+            .content
+            .contains("You: The main.rs file needs cleanup"));
     }
 
     #[test]
