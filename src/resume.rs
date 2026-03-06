@@ -20,30 +20,21 @@ pub fn resume_command(agent: Agent, session_id: &str) -> Vec<String> {
     cmd
 }
 
-pub fn exec_resume(agent: Agent, session_id: &str, directory: &Path) -> std::io::Error {
-    use std::os::unix::process::CommandExt;
-
-    let parts = resume_command(agent, session_id);
-    let mut command = std::process::Command::new(&parts[0]);
-    command.args(&parts[1..]);
-    command.current_dir(directory);
-
-    command.exec()
-}
-
 pub fn tmux_resume(
     agent: Agent,
     session_id: &str,
     directory: &Path,
 ) -> std::io::Result<()> {
     let parts = resume_command(agent, session_id);
+    let cmd_str = parts
+        .iter()
+        .map(|p| shell_escape(p))
+        .collect::<Vec<_>>()
+        .join(" ");
 
     let status = std::process::Command::new("tmux")
-        .arg("new-window")
-        .arg("-c")
+        .args(["new-window", "-c"])
         .arg(directory)
-        .arg("--")
-        .args(&parts)
         .status()?;
 
     if !status.success() {
@@ -53,7 +44,26 @@ pub fn tmux_resume(
         ));
     }
 
+    let status = std::process::Command::new("tmux")
+        .args(["send-keys", &cmd_str, "Enter"])
+        .status()?;
+
+    if !status.success() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "tmux send-keys failed",
+        ));
+    }
+
     Ok(())
+}
+
+fn shell_escape(s: &str) -> String {
+    if s.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_' || c == '.' || c == '/') {
+        s.to_string()
+    } else {
+        format!("'{}'", s.replace('\'', "'\\''"))
+    }
 }
 
 #[cfg(test)]

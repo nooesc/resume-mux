@@ -63,9 +63,9 @@ fn render_session_list(frame: &mut Frame, app: &mut App, area: Rect) {
             let max_dir = (inner_width / 2).min(35);
             let dir_short = shorten_path(&session.directory, &home_str, max_dir);
             let time_ago = format_time_ago(session.timestamp);
-            let right = format!("{}  {} msg", time_ago, session.message_count);
+            let right = format!("{:>3}  {:>4}", time_ago, session.message_count);
 
-            // Line 1: agent  dir  ...right-aligned...  time_ago  N msg
+            // Line 1: agent  dir  ...right-aligned...  time_ago  N turns
             let left_len = 6 + 1 + dir_short.chars().count();
             let padding = inner_width.saturating_sub(left_len + right.chars().count());
 
@@ -91,7 +91,11 @@ fn render_session_list(frame: &mut Frame, app: &mut App, area: Rect) {
             Block::default()
                 .borders(Borders::ALL)
                 .border_style(border_style)
-                .title(" sessions "),
+                .title(" sessions ")
+                .title_top(
+                    Line::from(Span::styled(" turns ", Style::default().fg(Color::DarkGray)))
+                        .alignment(Alignment::Right),
+                ),
         )
         .highlight_style(Style::default().bg(Color::Rgb(40, 40, 50)));
 
@@ -208,8 +212,6 @@ fn render_status_bar(frame: &mut Frame, app: &App, count: usize, total: usize, a
     spans.extend([
         Span::styled("enter", Style::default().fg(Color::Yellow)),
         Span::styled(" resume  ", Style::default().fg(Color::DarkGray)),
-        Span::styled("S-enter", Style::default().fg(Color::Yellow)),
-        Span::styled(" tmux  ", Style::default().fg(Color::DarkGray)),
         Span::styled("esc", Style::default().fg(Color::Yellow)),
         Span::styled(" quit  ", Style::default().fg(Color::DarkGray)),
         Span::styled(

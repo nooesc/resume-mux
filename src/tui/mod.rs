@@ -5,7 +5,7 @@ use crate::adapters::Session;
 use app::{App, Pane, ResumeAction};
 use crossterm::{
     event::{
-        self, Event, KeyCode, KeyEventKind, KeyModifiers, KeyboardEnhancementFlags,
+        self, Event, KeyCode, KeyEventKind, KeyboardEnhancementFlags,
         PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
     },
     execute,
@@ -48,7 +48,7 @@ pub fn run(
 
             // Global keys (work in any pane)
             match key.code {
-                KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                KeyCode::Enter => {
                     if std::env::var("TMUX").is_err() {
                         app.popup_message =
                             Some("Not inside a tmux session".to_string());
@@ -62,21 +62,6 @@ pub fn run(
                             session_id,
                             agent,
                             directory,
-                            tmux: true,
-                        });
-                    }
-                    break;
-                }
-                KeyCode::Enter => {
-                    if let Some((session_id, agent, directory)) = app
-                        .selected_session()
-                        .map(|r| (r.id.clone(), r.agent.clone(), r.directory.clone()))
-                    {
-                        app.resume_action = Some(ResumeAction {
-                            session_id,
-                            agent,
-                            directory,
-                            tmux: false,
                         });
                     }
                     break;

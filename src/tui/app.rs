@@ -27,7 +27,6 @@ pub struct ResumeAction {
     pub session_id: String,
     pub agent: Agent,
     pub directory: PathBuf,
-    pub tmux: bool,
 }
 
 impl App {

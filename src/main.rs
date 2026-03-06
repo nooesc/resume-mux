@@ -33,17 +33,10 @@ fn main() {
 
     match tui::run(sessions, cli.query) {
         Ok(Some(action)) => {
-            if action.tmux {
-                if let Err(e) =
-                    resume::tmux_resume(action.agent, &action.session_id, &action.directory)
-                {
-                    eprintln!("Failed to open tmux window: {}", e);
-                    std::process::exit(1);
-                }
-            } else {
-                let err =
-                    resume::exec_resume(action.agent, &action.session_id, &action.directory);
-                eprintln!("Failed to exec: {}", err);
+            if let Err(e) =
+                resume::tmux_resume(action.agent, &action.session_id, &action.directory)
+            {
+                eprintln!("Failed to open tmux window: {}", e);
                 std::process::exit(1);
             }
         }
