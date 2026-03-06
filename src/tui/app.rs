@@ -1,5 +1,6 @@
 use crate::adapters::Session;
 use crate::search::{self, SearchResult};
+use ratatui::widgets::ListState;
 
 pub struct App {
     pub sessions: Vec<Session>,
@@ -9,6 +10,7 @@ pub struct App {
     pub should_quit: bool,
     pub resume_action: Option<ResumeAction>,
     pub preview_scroll: usize,
+    pub list_state: ListState,
 }
 
 pub struct ResumeAction {
@@ -18,6 +20,8 @@ pub struct ResumeAction {
 
 impl App {
     pub fn new(sessions: Vec<Session>, initial_query: Option<String>, yolo: bool) -> Self {
+        let mut list_state = ListState::default();
+        list_state.select(Some(0));
         Self {
             sessions,
             query: initial_query.unwrap_or_default(),
@@ -26,6 +30,7 @@ impl App {
             should_quit: false,
             resume_action: None,
             preview_scroll: 0,
+            list_state,
         }
     }
 
@@ -37,6 +42,7 @@ impl App {
         let count = self.filtered_results().len();
         if count == 0 {
             self.selected = 0;
+            self.list_state.select(None);
             return;
         }
         if delta < 0 {
@@ -44,18 +50,21 @@ impl App {
         } else {
             self.selected = (self.selected + delta as usize).min(count - 1);
         }
+        self.list_state.select(Some(self.selected));
         self.preview_scroll = 0;
     }
 
     pub fn type_char(&mut self, c: char) {
         self.query.push(c);
         self.selected = 0;
+        self.list_state.select(Some(0));
         self.preview_scroll = 0;
     }
 
     pub fn backspace(&mut self) {
         self.query.pop();
         self.selected = 0;
+        self.list_state.select(Some(0));
         self.preview_scroll = 0;
     }
 

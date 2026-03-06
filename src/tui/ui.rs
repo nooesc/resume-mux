@@ -6,7 +6,7 @@ use ratatui::{
     widgets::*,
 };
 
-pub fn render(frame: &mut Frame, app: &App) {
+pub fn render(frame: &mut Frame, app: &mut App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -28,7 +28,7 @@ fn render_search_bar(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(input, area);
 }
 
-fn render_main_panes(frame: &mut Frame, app: &App, area: Rect) {
+fn render_main_panes(frame: &mut Frame, app: &mut App, area: Rect) {
     let panes = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(45), Constraint::Percentage(55)])
@@ -38,13 +38,12 @@ fn render_main_panes(frame: &mut Frame, app: &App, area: Rect) {
     render_preview(frame, app, panes[1]);
 }
 
-fn render_session_list(frame: &mut Frame, app: &App, area: Rect) {
+fn render_session_list(frame: &mut Frame, app: &mut App, area: Rect) {
     let results = app.filtered_results();
 
     let items: Vec<ListItem> = results
         .iter()
-        .enumerate()
-        .map(|(i, r)| {
+        .map(|r| {
             let agent_style = match r.session.agent {
                 Agent::Claude => Style::default().fg(Color::Rgb(204, 120, 50)),
                 Agent::Codex => Style::default().fg(Color::Rgb(100, 200, 100)),
@@ -73,20 +72,15 @@ fn render_session_list(frame: &mut Frame, app: &App, area: Rect) {
                 ),
             ]);
 
-            let style = if i == app.selected {
-                Style::default().bg(Color::Rgb(40, 40, 50))
-            } else {
-                Style::default()
-            };
-
-            ListItem::new(vec![line, meta]).style(style)
+            ListItem::new(vec![line, meta])
         })
         .collect();
 
     let list = List::new(items)
-        .block(Block::default().borders(Borders::ALL).title(" sessions "));
+        .block(Block::default().borders(Borders::ALL).title(" sessions "))
+        .highlight_style(Style::default().bg(Color::Rgb(40, 40, 50)));
 
-    frame.render_widget(list, area);
+    frame.render_stateful_widget(list, area, &mut app.list_state);
 }
 
 fn render_preview(frame: &mut Frame, app: &App, area: Rect) {

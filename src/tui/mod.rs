@@ -21,7 +21,7 @@ pub fn run(sessions: Vec<Session>, initial_query: Option<String>, yolo: bool) ->
     let mut app = App::new(sessions, initial_query, yolo);
 
     loop {
-        terminal.draw(|frame| ui::render(frame, &app))?;
+        terminal.draw(|frame| ui::render(frame, &mut app))?;
 
         if let Event::Key(key) = event::read()? {
             if key.kind != KeyEventKind::Press {
