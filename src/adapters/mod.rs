@@ -70,14 +70,14 @@ impl Session {
 }
 
 pub fn load_all_sessions() -> Vec<Session> {
-    let mut sessions: Vec<Session> = Vec::new();
+    // Scan both adapters in parallel
+    let (claude_sessions, codex_sessions) = rayon::join(
+        || claude::scan_sessions(),
+        || codex::scan_sessions(),
+    );
 
-    let claude_sessions = claude::scan_sessions();
-    let codex_sessions = codex::scan_sessions();
-
-    sessions.extend(claude_sessions);
+    let mut sessions = claude_sessions;
     sessions.extend(codex_sessions);
-
     sessions.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
     sessions
 }

@@ -179,13 +179,14 @@ fn parse_session_file(path: &Path) -> Option<Session> {
     title.truncate(80);
 
     // Extract session id from filename if not found in metadata
+    // Filename: rollout-2026-01-28T17-14-41-019c06ac-4e6f-7832-9f98-eb972834cfe1
+    // The UUID is the last 5 hyphen-separated segments (8-4-4-4-12 pattern)
     if session_id.is_none() {
         if let Some(name) = path.file_stem().and_then(|n| n.to_str()) {
-            // rollout-2026-01-28T17-14-41-019c06ac-4e6f-7832-9f98-eb972834cfe1
-            // Try to extract UUID from the end
-            let parts: Vec<&str> = name.splitn(2, '-').collect();
-            if parts.len() == 2 {
-                session_id = Some(parts[1].to_string());
+            let segments: Vec<&str> = name.split('-').collect();
+            if segments.len() >= 5 {
+                let uuid_parts = &segments[segments.len() - 5..];
+                session_id = Some(uuid_parts.join("-"));
             }
         }
     }
