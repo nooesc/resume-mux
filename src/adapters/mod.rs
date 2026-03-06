@@ -181,7 +181,7 @@ pub fn load_session_content(agent: &Agent, path: &Path) -> Option<String> {
 
 pub fn cache_path(name: &str) -> Option<PathBuf> {
     let base = dirs::cache_dir().or_else(|| dirs::home_dir().map(|home| home.join(".cache")))?;
-    Some(base.join("agent-resume").join(name))
+    Some(base.join("resume-mux").join(name))
 }
 
 pub fn load_session_cache(path: &Path) -> HashMap<PathBuf, SessionCacheEntry> {

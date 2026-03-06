@@ -3,21 +3,6 @@
 version = 4
 
 [[package]]
-name = "agent-resume"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "clap",
- "crossterm",
- "dirs",
- "ratatui",
- "rayon",
- "serde",
- "serde_json",
- "tempfile",
-]
-
-[[package]]
 name = "allocator-api2"
 version = "0.2.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -734,6 +719,21 @@ dependencies = [
  "getrandom 0.2.17",
  "libredox",
  "thiserror",
+]
+
+[[package]]
+name = "resume-mux"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "clap",
+ "crossterm",
+ "dirs",
+ "ratatui",
+ "rayon",
+ "serde",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]
